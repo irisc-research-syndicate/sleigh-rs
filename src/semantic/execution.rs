@@ -45,7 +45,7 @@ pub struct Execution {
     pub entry_block: BlockId,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockId(pub usize);
 
 #[derive(Clone, Debug)]
@@ -68,7 +68,7 @@ pub enum Statement {
     Assignment(Assignment),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VariableId(pub usize);
 
 #[derive(Clone, Debug)]
@@ -155,7 +155,9 @@ impl ExprUnaryOp {
             Unary::TakeLsb(len) => (len.get() * 8).try_into().unwrap(),
             Unary::TrunkLsb { trunk: _, bits } => *bits,
             Unary::BitRange { range: _, bits } => *bits,
-            Unary::Dereference(mem) => mem.len_bytes,
+            Unary::Dereference(mem) => {
+                (mem.len_bytes.get() * 8).try_into().unwrap()
+            }
             Unary::Zext(bits)
             | Unary::Sext(bits)
             | Unary::Popcount(bits)
@@ -242,7 +244,9 @@ impl ExprValue {
             Self::ExeVar(x) => execution.variable(*x).len_bits,
             Self::IntDynamic(ExprDynamicInt { bits, .. }) => *bits,
             Self::VarnodeDynamic(ExprVarnodeDynamic { attach_id, .. }) => {
-                sleigh.attach_varnode(*attach_id).len_bytes(sleigh)
+                (sleigh.attach_varnode(*attach_id).len_bytes(sleigh).get() * 8)
+                    .try_into()
+                    .unwrap()
             }
         }
     }

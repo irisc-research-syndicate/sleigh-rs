@@ -39,6 +39,7 @@ impl Sleigh {
         };
         let space_type = space_type.unwrap_or(SpaceType::Register);
         let space = Space {
+            name: input.name.clone().into(),
             src,
             space_type,
             wordsize: word_size,
