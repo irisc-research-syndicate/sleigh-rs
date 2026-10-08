@@ -2,6 +2,7 @@ use crate::{NumberNonZeroUnsigned, Span};
 
 #[derive(Clone, Debug)]
 pub struct Space {
+    pub name: Box<str>,
     pub src: Span,
     pub space_type: SpaceType,
     ///wordsize len in bytes, AKA number of bytes that each address store,

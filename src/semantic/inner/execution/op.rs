@@ -20,8 +20,9 @@ impl MemoryLocation {
         }
     }
     pub fn convert(self) -> FinalMemoryLocation {
+        let bits = self.size.possible_value().unwrap().get();
         FinalMemoryLocation {
-            len_bytes: self.size.possible_value().unwrap(),
+            len_bytes: bits.div_ceil(8).try_into().unwrap(),
             space: self.space,
             location: self.location,
         }
