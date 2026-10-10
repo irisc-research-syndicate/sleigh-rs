@@ -1,5 +1,5 @@
 use nom::branch::alt;
-use nom::combinator::{map, opt};
+use nom::combinator::map;
 use nom::multi::many0;
 use nom::sequence::{delimited, pair, separated_pair, terminated, tuple};
 use nom::IResult;
@@ -45,7 +45,7 @@ macro_rules! op_parser_levels {
 macro_rules! declare_expr_level {
     ($name:ident, $next:ident, $op:path) => {
         fn $name(input: &[Token]) -> IResult<&[Token], Self, Box<SleighError>> {
-            Self::parse_op(Self::$name, Self::$next, $op)(input)
+            Self::parse_op(Self::$next, $op)(input)
         }
     };
 }
@@ -108,25 +108,31 @@ impl Expr {
         ))(input)
     }
 
+    /// One precedence level: operands of the next (tighter) level joined by
+    /// this level's operators, left associative, so `a - b - c` is
+    /// `(a - b) - c`
     #[allow(clippy::type_complexity)]
     fn parse_op(
-        this_level: fn(&[Token]) -> IResult<&[Token], Expr, Box<SleighError>>,
         next_level: fn(&[Token]) -> IResult<&[Token], Expr, Box<SleighError>>,
         op: fn(&[Token]) -> IResult<&[Token], (Op, &Span), Box<SleighError>>,
     ) -> impl FnMut(&[Token]) -> IResult<&[Token], Expr, Box<SleighError>> {
         move |input: &[Token]| {
-            let (input, (left, rest)) =
-                pair(next_level, opt(pair(op, this_level)))(input)?;
-            let expr = if let Some(((op, op_src), rest)) = rest {
-                Self::Op(op_src.clone(), op, Box::new(left), Box::new(rest))
-            } else {
-                left
-            };
+            let (input, (first, rest)) =
+                pair(next_level, many0(pair(op, next_level)))(input)?;
+            let expr =
+                rest.into_iter().fold(first, |left, ((op, op_src), right)| {
+                    Self::Op(
+                        op_src.clone(),
+                        op,
+                        Box::new(left),
+                        Box::new(right),
+                    )
+                });
             Ok((input, expr))
         }
     }
 
-    // parse with precedence
+    // parse with precedence, loosest first: bitwise, shifts, `+ -`, `* /`
     // safe, things around brackets
     declare_expr_level!(
         parse_safe_lv1,
@@ -141,8 +147,8 @@ impl Expr {
     // unsafe, things not around brackets
     declare_expr_level!(parse_unsafe_lv1, parse_lv2, Op::parse_unsafe_level4);
     declare_expr_level!(parse_lv2, parse_lv3, Op::parse_level3);
-    declare_expr_level!(parse_lv3, parse_lv4, Op::parse_level2);
-    declare_expr_level!(parse_lv4, parse_rec_or_ele, Op::parse_level1);
+    declare_expr_level!(parse_lv3, parse_lv4, Op::parse_level1);
+    declare_expr_level!(parse_lv4, parse_rec_or_ele, Op::parse_level2);
 
     pub fn parse_safe(
         input: &[Token],
