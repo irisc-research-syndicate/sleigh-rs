@@ -119,6 +119,9 @@ impl ExecutionBuilder for Builder<'_> {
             .ok_or_else(|| Box::new(ExecutionError::MissingRef(src.clone())))?
         {
             GlobalScope::Varnode(varnode) => Ok(WriteValue::Varnode(varnode)),
+            GlobalScope::Bitrange(bitrange) => {
+                Ok(WriteValue::Bitrange(bitrange))
+            }
             GlobalScope::TokenField(token_field_id) => {
                 //filter field with meaning to variable
                 let meaning = self.sleigh().token_field(token_field_id).attach;
