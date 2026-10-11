@@ -148,18 +148,56 @@ impl Block {
         map(
             tuple((Element::parse, many0(pair(Op::parse, Element::parse)))),
             |(first, elements)| {
-                //TODO improve this src
-                let src = match &first.field {
-                    Field::SubPattern(pat) => pat.src.clone(),
-                    Field::Field { src, .. } => src.clone(),
-                };
-                Self {
-                    first,
-                    elements,
-                    src,
+                let mixed = elements.iter().any(|(op, _)| *op == Op::And)
+                    && elements.iter().any(|(op, _)| *op == Op::Or);
+                if mixed {
+                    Self::group_ands(first, elements)
+                } else {
+                    Self::new(first, elements)
                 }
             },
         )(input)
+    }
+
+    fn new(first: Element, elements: Vec<(Op, Element)>) -> Self {
+        //TODO improve this src
+        let src = match &first.field {
+            Field::SubPattern(pat) => pat.src.clone(),
+            Field::Field { src, .. } => src.clone(),
+        };
+        Self {
+            first,
+            elements,
+            src,
+        }
+    }
+
+    /// `&` binds tighter than `|`, as in Ghidra: group each run of `&` into a sub-pattern,
+    /// leaving a block of `|` only
+    fn group_ands(first: Element, elements: Vec<(Op, Element)>) -> Self {
+        let mut groups = vec![(first, vec![])];
+        for (op, element) in elements {
+            match op {
+                Op::And => groups.last_mut().unwrap().1.push((op, element)),
+                Op::Or => groups.push((element, vec![])),
+            }
+        }
+        let mut groups = groups.into_iter().map(|(first, ands)| {
+            if ands.is_empty() {
+                return first;
+            }
+            let block = Self::new(first, ands);
+            let pattern = Pattern {
+                src: block.src.clone(),
+                blocks: vec![block],
+            };
+            Element {
+                field: Field::SubPattern(pattern),
+                ellipsis: None,
+            }
+        });
+        let first = groups.next().unwrap();
+        Self::new(first, groups.map(|group| (Op::Or, group)).collect())
     }
 }
 
