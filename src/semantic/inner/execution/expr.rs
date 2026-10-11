@@ -753,10 +753,12 @@ impl ExprValue {
                     }
                     // Raw value for the TokenField
                     _ => {
-                        // TokenField size auto adjust it's size
+                        // TokenField size auto adjust it's size, at least its bits and
+                        // zero extended if needed, e.g. `field:1` of a 5 bit field
                         let size = FieldSize::new_unsized()
-                            .set_possible_bits(tf.bits.len())
-                            .unwrap();
+                            .set_min_bits(tf.bits.len())
+                            .unwrap()
+                            .set_possible_min();
                         Self::TokenField(ExprTokenField { size, id: tf_id })
                     }
                 }
@@ -772,9 +774,11 @@ impl ExprValue {
                         })
                     }
                     _ => {
+                        // at least its bits and zero extended if needed, like a TokenField
                         let size = FieldSize::default()
                             .set_min_bits(ctx.bitrange.bits.len())
-                            .unwrap();
+                            .unwrap()
+                            .set_possible_min();
                         Self::Context(ExprContext { size, id: ctx_id })
                     }
                 }
