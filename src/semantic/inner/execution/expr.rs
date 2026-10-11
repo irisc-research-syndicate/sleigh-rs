@@ -97,6 +97,31 @@ pub struct ExprNumber {
     pub number: Number,
 }
 
+/// Like Ghidra, gives a positive number too wide for the other operand of a binary operation that
+/// operand's `size`, dropping its high bits, e.g. `tmp:4 & 0xfffffffffffffff0`. Returns whether
+/// it did.
+fn truncate_number(expr: &mut Expr, size: FieldSize) -> bool {
+    let Expr::Value(ExprElement::Value {
+        value: ExprValue::Int(num),
+        ..
+    }) = expr
+    else {
+        return false;
+    };
+    let (Some(bits), Some(min), Number::Positive(value)) =
+        (size.final_value(), num.size.min_bits(), num.number)
+    else {
+        return false;
+    };
+    if num.size.is_final() || min <= bits {
+        return false;
+    }
+    let mask = NumberUnsigned::MAX >> (NumberUnsigned::BITS as u64 - bits.get().min(64));
+    num.number = Number::Positive(value & mask);
+    num.size = FieldSize::Value(bits);
+    true
+}
+
 #[derive(Clone, Debug)]
 pub struct ExprIntDynamic {
     pub size: FieldSize,
@@ -1364,6 +1389,13 @@ fn inner_expr_solve(
         ) => {
             left.solve(sleigh, execution, solved)?;
             right.solve(sleigh, execution, solved)?;
+            let left_size = left.size(sleigh, execution);
+            let right_size = right.size(sleigh, execution);
+            if truncate_number(&mut left, right_size)
+                | truncate_number(&mut right, left_size)
+            {
+                solved.i_did_a_thing();
+            }
             let restricted = len::a_b_generate_c(
                 &mut *left.size_mut(sleigh, execution),
                 &mut *right.size_mut(sleigh, execution),
