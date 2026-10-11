@@ -610,47 +610,21 @@ pub trait ExecutionBuilder {
                 let op =
                     input.op.map(|op| self.new_truncate(op)).transpose()?;
                 match table_export {
-                    // assignment to the table export address
-                    Some(TableExportType::Reference {
-                        len: _,
-                        space: _,
-                        also_values: _,
-                    }) => Ok(Statement::Assignment(Assignment::new(
+                    // assignment to the varnode the table exports, as in Ghidra this also
+                    // works for a value, e.g. a temporary the sub-constructor computed
+                    Some(
+                        TableExportType::Reference { .. }
+                        | TableExportType::Value(_),
+                    ) => Ok(Statement::Assignment(Assignment::new(
                         input.src.clone(),
                         AssignmentWrite::TableExport { table_id, op },
                         input.src,
                         right,
                     ))),
-                    // TODO is this required, if so where?
-                    // HACK: write to a table that export a value is actually a
-                    // mem_write with the table export being the address
-                    // for the default space
-                    Some(TableExportType::Const(_))
-                    | Some(TableExportType::Value(_)) => {
-                        todo!("write to {:?}", &input.src);
-                        // let space = self
-                        //     .sleigh()
-                        //     .default_space()
-                        //     .ok_or_else(|| ExecutionError::DefaultSpace)?;
-                        // let mem = MemoryLocation {
-                        //     space,
-                        //     size: FieldSize::new_unsized(),
-                        //     location: input.src.clone(),
-                        // };
-                        // Ok(Statement::MemWrite(MemWrite::new(
-                        //     self.sleigh(),
-                        //     self.execution(),
-                        //     Expr::new_value(ExprElement::Value {
-                        //         location: input.src.clone(),
-                        //         value: ExprValue::Table(table_id),
-                        //     }),
-                        //     mem,
-                        //     input.src,
-                        //     right,
-                        // )))
-                    }
-                    // table is unimpl or simply don't export
-                    None | Some(TableExportType::None) => Err(Box::new(
+                    // a constant, unimpl or simply don't export
+                    None
+                    | Some(TableExportType::None)
+                    | Some(TableExportType::Const(_)) => Err(Box::new(
                         ExecutionError::WriteInvalidTable(input.src),
                     )),
                 }
