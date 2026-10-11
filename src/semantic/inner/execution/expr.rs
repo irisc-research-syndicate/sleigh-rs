@@ -766,6 +766,7 @@ impl ExprValue {
                 Self::Bitrange(ExprBitrange { size, id })
             }
             ReadScope::Table(id) => Self::Table(id),
+            ReadScope::Empty => Self::Int(ExprNumber::new(Number::Positive(0))),
             ReadScope::DisVar(id) => {
                 let size = FieldSize::new_unsized();
                 Self::DisVar(ExprDisVar { size, id })

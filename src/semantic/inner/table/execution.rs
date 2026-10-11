@@ -97,6 +97,19 @@ impl ExecutionBuilder for Builder<'_> {
             {
                 Ok(ReadScope::Table(table_id))
             }
+            //like Ghidra, a table that exports nothing can still be read,
+            //e.g. passed to a user function
+            Table(table_id)
+                if self
+                    .sleigh()
+                    .table(table_id)
+                    .export
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|x| x.export_nothing()) =>
+            {
+                Ok(ReadScope::Empty)
+            }
             _ => Err(Box::new(ExecutionError::InvalidRef(src.clone()))),
         }
     }

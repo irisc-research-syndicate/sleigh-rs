@@ -36,6 +36,8 @@ pub enum ReadScope {
     Context(ContextId),
     Bitrange(BitrangeId),
     Table(TableId),
+    /// A table that exports nothing, read as `0` like Ghidra's empty handle
+    Empty,
     DisVar(disassembly::VariableId),
     ExeVar(VariableId),
 }
