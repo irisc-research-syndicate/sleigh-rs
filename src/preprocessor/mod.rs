@@ -189,12 +189,29 @@ impl DrainingMacro {
     }
 }
 
+/// An if-block being skipped, which like Ghidra's preprocessor may continue past the end of the
+/// file it started in into the including file
+#[derive(Clone, Debug)]
+struct Skipping {
+    /// The `@if` (or `@elif`/`@else`) that started the skip
+    src: FileSpan,
+    /// Skip to the `@endif` only, a previous branch was entered
+    to_endif: bool,
+    /// Depth of the nested if-blocks being skipped over
+    depth: u32,
+}
+
 #[derive(Clone, Debug)]
 enum DrainingFileProduct {
     Token(Token),
     File(String, FileSpan),
     Expand(String, FileSpan),
-    End,
+    /// End of the file, with the if-blocks still open and the skip still running, both of which
+    /// carry on in the including file as in Ghidra's preprocessor
+    End {
+        if_stack: Vec<(FileSpan, IfStatus)>,
+        skipping: Option<Skipping>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -259,16 +276,18 @@ impl DrainingFile {
         //return values
         Ok((value, location))
     }
+    /// Moves to the next if-block border at `depth` 0 accepted by `f`, without consuming it.
+    /// Nested if-blocks update `depth`. None if the file ends first.
     fn next_if_block<F>(
         &mut self,
-        src: &FileSpan,
+        depth: &mut u32,
         mut f: F,
-    ) -> Result<IfBorders, Box<PreprocessorError>>
+    ) -> Option<IfBorders>
     where
         F: FnMut(IfBorders) -> bool,
     {
         use IfBorders::*;
-        let mut counter = 0u32;
+        let counter = depth;
         let data = &self.data[self.position..];
         let found = data
             .lines()
@@ -287,11 +306,11 @@ impl DrainingFile {
                 Some((line_num, line, found_macro))
             })
             .find_map(|(line_num, line, found)| {
-                match (counter, found) {
+                match (*counter, found) {
                     //ignore the sub if
-                    (_, If | IfDef | IfNDef) => counter += 1,
+                    (_, If | IfDef | IfNDef) => *counter += 1,
                     //if in a sub if, just close it
-                    (1.., EndIf) => counter -= 1,
+                    (1.., EndIf) => *counter -= 1,
                     //if sub-if-block ifElse or Else, just ignore it
                     (1.., IfElse | Else) => (),
                     //found the end of the block, don't consume macro, just exit
@@ -304,54 +323,60 @@ impl DrainingFile {
                 None
             });
         let Some((line_num, line, block)) = found else {
-            return Err(Box::new(PreprocessorError::NotFoundEndIf(
-                src.clone(),
-            )));
+            //skip the rest of the file
+            self.location.line += data.lines().count() as u64;
+            self.location.column = 0;
+            self.position = self.data.len();
+            return None;
         };
 
         let skip = line.as_ptr() as usize - data.as_ptr() as usize;
         self.position += skip;
         self.location.line += line_num as u64;
         self.location.column = 0;
-        Ok(block)
+        Some(block)
     }
 
-    fn enter_if_block(
+    /// Skips the if-block in `skipping`, entering the first `@elif`/`@else` branch that applies.
+    /// Returns the skip if the file ends before the if-block does.
+    fn skip(
         &mut self,
-        cond: bool,
+        mut skipping: Skipping,
         state: &PreProcessorState,
-        src: &FileSpan,
-    ) -> Result<(), Box<PreprocessorError>> {
-        //if this if is true, just to inside it
-        if cond {
-            self.if_stack.push((src.clone(), IfStatus::If));
-            return Ok(());
-        }
-        //othewise find the next block and check if we will enter it
+    ) -> Result<Option<Skipping>, Box<PreprocessorError>> {
         loop {
-            let _next_block = self.next_if_block(src, |_| true)?;
+            let to_endif = skipping.to_endif;
+            let border = self.next_if_block(&mut skipping.depth, |border| {
+                !to_endif || border == IfBorders::EndIf
+            });
+            if border.is_none() {
+                return Ok(Some(skipping));
+            }
             match self.nom_it(MacroLine::parse)? {
                 (MacroLine::ElIf(cond), src) => {
                     if check_cond(state, cond, &src)? {
-                        self.if_stack.push((src.clone(), IfStatus::IfElse));
-                        break;
-                    } else {
-                        //not the block that we can enter, search the next
-                        continue;
+                        self.if_stack.push((src, IfStatus::IfElse));
+                        return Ok(None);
                     }
+                    //not the block that we can enter, search the next
                 }
                 (MacroLine::Else, _) => {
-                    self.if_stack.push((src.clone(), IfStatus::Else));
-                    break;
+                    self.if_stack.push((skipping.src, IfStatus::Else));
+                    return Ok(None);
                 }
-                (MacroLine::EndIf, _) => {
-                    //we never entered any if-block
-                    break;
-                }
+                //we never entered any if-block
+                (MacroLine::EndIf, _) => return Ok(None),
                 (_, _) => unreachable!(),
             }
         }
-        Ok(())
+    }
+
+    /// The end of the file, or of the skip that reached it
+    fn end(&mut self, skipping: Option<Skipping>) -> DrainingFileProduct {
+        DrainingFileProduct::End {
+            if_stack: std::mem::take(&mut self.if_stack),
+            skipping,
+        }
     }
     fn parse_macro_line(&mut self) -> Option<DrainingFileBody> {
         let (macro_line, location) = self.nom_it(MacroLine::parse).ok()?;
@@ -428,13 +453,7 @@ impl DrainingFile {
             let status = self.if_stack.last().cloned();
             let next_block = self.parse_body()?;
             match (status, next_block) {
-                (None, End) => return Ok(DrainingFileProduct::End),
-
-                (Some((location, _)), End) => {
-                    return Err(Box::new(PreprocessorError::NotFoundEndIf(
-                        location,
-                    )))
-                }
+                (_, End) => return Ok(self.end(None)),
 
                 //found a token, just return it
                 (_, Token(token)) => {
@@ -483,8 +502,18 @@ impl DrainingFile {
 
                 //found a inner if, just push the block or skip it
                 (_, Macro(If(cond), src)) => {
-                    let cond = check_cond(state, cond, &src)?;
-                    self.enter_if_block(cond, state, &src)?
+                    if check_cond(state, cond, &src)? {
+                        self.if_stack.push((src, IfStatus::If));
+                    } else {
+                        let skipping = Skipping {
+                            src,
+                            to_endif: false,
+                            depth: 0,
+                        };
+                        if let Some(skipping) = self.skip(skipping, state)? {
+                            return Ok(self.end(Some(skipping)));
+                        }
+                    }
                 }
 
                 //found the end of the currently executing if-block
@@ -492,14 +521,15 @@ impl DrainingFile {
                     Some((_, IfStatus::If | IfStatus::IfElse)),
                     Macro(ElIf(_) | Else, src),
                 ) => {
-                    let _next_block = self.next_if_block(&src, |x| {
-                        matches!(x, IfBorders::EndIf)
-                    })?;
-                    match self.nom_it(MacroLine::parse)? {
-                        (MacroLine::EndIf, _) => (),
-                        (_, _) => unreachable!(),
-                    }
                     self.if_stack.pop();
+                    let skipping = Skipping {
+                        src,
+                        to_endif: true,
+                        depth: 0,
+                    };
+                    if let Some(skipping) = self.skip(skipping, state)? {
+                        return Ok(self.end(Some(skipping)));
+                    }
                 }
             }
         }
@@ -640,6 +670,32 @@ impl FilePreProcessor {
             }
         }
     }
+    /// Carries the if-blocks left open, and the skip still running, at the end of an included
+    /// file on into the files including it, as Ghidra's preprocessor does with its single
+    /// if-stack. Like Ghidra, if-blocks still open at the end of the root file are ignored.
+    fn end_file(
+        &mut self,
+        mut if_stack: Vec<(FileSpan, IfStatus)>,
+        mut skipping: Option<Skipping>,
+    ) -> Result<(), Box<PreprocessorError>> {
+        while let Some(DrainingSource::File(parent)) = self.file_stack.last_mut() {
+            parent.if_stack.append(&mut if_stack);
+            let Some(skip) = skipping.take() else {
+                return Ok(());
+            };
+            match parent.skip(skip, &self.defines)? {
+                None => return Ok(()),
+                Some(skip) => {
+                    //the parent ended while skipping too
+                    if_stack = std::mem::take(&mut parent.if_stack);
+                    skipping = Some(skip);
+                    self.file_stack.pop();
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// process the accumulated buffer
     pub fn parse(&mut self) -> Result<Option<Token>, Box<PreprocessorError>> {
         // read files untill is able to process a token
@@ -651,7 +707,14 @@ impl FilePreProcessor {
             let token = match file {
                 DrainingSource::File(file) => {
                     match file.parse(&mut self.defines)? {
-                        DrainingFileProduct::End => None,
+                        DrainingFileProduct::End {
+                            if_stack,
+                            skipping,
+                        } => {
+                            self.file_stack.pop();
+                            self.end_file(if_stack, skipping)?;
+                            continue;
+                        }
                         DrainingFileProduct::Token(token) => Some(token),
                         DrainingFileProduct::File(file, _src) => {
                             let fullpath = self
